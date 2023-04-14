@@ -37,19 +37,20 @@ def send_response(event, context, responseStatus, responseData, resourceId, reas
     responseUrl = event['ResponseURL']
     logging.getLogger().debug(responseUrl)
 
-    cw_logs_url = "https://console.aws.amazon.com/cloudwatch/home?region=%s#logEventViewer:group=%s;stream=%s"%(context.invoked_function_arn.split(':')[3], context.log_group_name, context.log_stream_name)
+    cw_logs_url = f"https://console.aws.amazon.com/cloudwatch/home?region={context.invoked_function_arn.split(':')[3]}#logEventViewer:group={context.log_group_name};stream={context.log_stream_name}"
     logging.getLogger().debug("Logs: cw_logs_url")
 
-    responseBody = {}
-    responseBody['Status'] = responseStatus
-    responseBody['Reason'] = reason or ('See the details in CloudWatch Logs: ' +  cw_logs_url)
-    responseBody['PhysicalResourceId'] = resourceId
-    responseBody['StackId'] = event['StackId']
-    responseBody['RequestId'] = event['RequestId']
-    responseBody['LogicalResourceId'] = event['LogicalResourceId']
-    responseBody['NoEcho'] = False
-    responseBody['Data'] = responseData
-
+    responseBody = {
+        'Status': responseStatus,
+        'Reason': reason
+        or f'See the details in CloudWatch Logs: {cw_logs_url}',
+        'PhysicalResourceId': resourceId,
+        'StackId': event['StackId'],
+        'RequestId': event['RequestId'],
+        'LogicalResourceId': event['LogicalResourceId'],
+        'NoEcho': False,
+        'Data': responseData,
+    }
     json_responseBody = json.dumps(responseBody)
 
     logging.getLogger().debug("Response body:\n" + json_responseBody)
@@ -63,10 +64,12 @@ def send_response(event, context, responseStatus, responseData, resourceId, reas
         response = requests.put(responseUrl,
                                 data=json_responseBody,
                                 headers=headers)
-        logging.getLogger().debug("Status code: " + response.reason)
+        logging.getLogger().debug(f"Status code: {response.reason}")
 
     except Exception as error:
-        logging.getLogger().error("send(..) failed executing requests.put(..): " + str(error))
+        logging.getLogger().error(
+            f"send(..) failed executing requests.put(..): {str(error)}"
+        )
 
     logging.getLogger().debug("send_response - End")
 
@@ -105,10 +108,6 @@ def lambda_handler(event, context):
 
             return json.dumps(result)
 
-        #------------------------------------------------------------------
-        # Set query parameters
-        #------------------------------------------------------------------
-        queryType = '/view/iocs?'
         query = {
             'startDate' : int(time.time()) - (int(environ['DAYS_REQUESTED'])*86400),
             'endDate' : int(time.time())
@@ -129,14 +128,14 @@ def lambda_handler(event, context):
                 private_key = str(p['Value'])
 
         #Create Query
-        enc_q = queryType + urllib.urlencode(query) + '&format=csv'
+        enc_q = f'/view/iocs?{urllib.urlencode(query)}&format=csv'
 
         #Generate proper accept_header for requested indicator type
         accept_header = 'text/csv'
 
         #Generate Hash for Auth
         timeStamp = email.Utils.formatdate(localtime=True)
-        data = enc_q + '2.6' + accept_header + unicode(timeStamp)
+        data = f'{enc_q}2.6{accept_header}{unicode(timeStamp)}'
         hashed = hmac.new(private_key, data, hashlib.sha256)
 
         headers = {
@@ -162,7 +161,7 @@ def lambda_handler(event, context):
         # Read Content
         #------------------------------------------------------------------
         timeStamp = datetime.now()
-        fileName = "/tmp/iSIGHT_%s_%s_days.csv"%(timeStamp.strftime("%Y%m%d-%H%M%S"), environ['DAYS_REQUESTED'])
+        fileName = f"""/tmp/iSIGHT_{timeStamp.strftime("%Y%m%d-%H%M%S")}_{environ['DAYS_REQUESTED']}_days.csv"""
         with open(fileName, 'wb') as f:
             f.write(response.read())
             f.close()
@@ -171,14 +170,14 @@ def lambda_handler(event, context):
         # Upload to S3
         #------------------------------------------------------------------
         s3 = boto3.client('s3')
-        outputFileName = "iSIGHT/%s_%s_days.csv"%(timeStamp.strftime("%Y%m%d-%H%M%S"), environ['DAYS_REQUESTED'])
+        outputFileName = f"""iSIGHT/{timeStamp.strftime("%Y%m%d-%H%M%S")}_{environ['DAYS_REQUESTED']}_days.csv"""
         s3.upload_file(fileName, environ['OUTPUT_BUCKET'], outputFileName, ExtraArgs={'ContentType': "application/CSV"})
 
         #------------------------------------------------------------------
         # Guard Duty
         #------------------------------------------------------------------
-        location = "https://s3.amazonaws.com/%s/%s"%(environ['OUTPUT_BUCKET'], outputFileName)
-        name = "TF-%s"%timeStamp.strftime("%Y%m%d")
+        location = f"https://s3.amazonaws.com/{environ['OUTPUT_BUCKET']}/{outputFileName}"
+        name = f'TF-{timeStamp.strftime("%Y%m%d")}'
         guardduty = boto3.client('guardduty')
         response = guardduty.list_detectors()
 
@@ -228,11 +227,14 @@ def lambda_handler(event, context):
 
                     if tmpName.startswith('TF-'):
                         setDate = datetime.strptime(tmpName.split('-')[-1], "%Y%m%d")
-                        if oldestDate == None or setDate < oldestDate:
+                        if oldestDate is None or setDate < oldestDate:
                             oldestDate = setDate
                             oldestID = setId
 
-                if oldestID != None:
+                if oldestID is None:
+                    raise
+
+                else:
                     response = guardduty.update_threat_intel_set(
                         Activate=True,
                         DetectorId=detectorId,
@@ -240,9 +242,6 @@ def lambda_handler(event, context):
                         Name=name,
                         ThreatIntelSetId=oldestID
                     )
-                else:
-                    raise
-
             else:
                 raise
 
@@ -251,7 +250,9 @@ def lambda_handler(event, context):
         #------------------------------------------------------------------
         result = {
             'statusCode': '200',
-            'body':  {'message': "You requested: %s day(s) of /view/iocs indicators in CSV"%environ['DAYS_REQUESTED']}
+            'body': {
+                'message': f"You requested: {environ['DAYS_REQUESTED']} day(s) of /view/iocs indicators in CSV"
+            },
         }
 
     except Exception as error:
